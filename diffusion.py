@@ -15,6 +15,8 @@ class DiffusionModel:
         self.model = model
         self.alphas = 1 - self.betas
         self.alpha_hats = torch.cumprod(self.alphas, dim=0)
+        self.prev_alphas = F.pad(self.alpha_hats[:-1], (1, 0), value = 1.)
+        self.beta_hats = self.betas * (1. - self.prev_alphas) / (1. - self.alpha_hats)
 
     def forward_process(self, x, t, noise):
         a_hats = self.alpha_hats[t].reshape(len(x), 1, 1, 1)
@@ -48,16 +50,30 @@ class DiffusionModel:
         x = (x * 255).type(torch.uint8)
         return x
 
-    def sample_start(self, n):
+    def get_statistics(self, x_start, x_t, t):
+        var = self.beta_hats[t][:, None, None, None]
+        b = (x_t - self.alpha_hats[t].sqrt()[:, None, None, None] * x_start) / (1 - self.alpha_hats[t]).sqrt()[:, None, None, None]
+        mean = self.prev_alphas[t].sqrt()[:, None, None, None] * x_start + (1. - self.prev_alphas[t] - self.beta_hats[t]).sqrt()[:, None, None, None] * b
+        return mean, torch.log(var.clamp(min =1e-20))
+
+    def sample_signal(self, n):
         self.model.eval()
         with torch.no_grad():
-            x = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
-            t = (torch.ones(n, 1) * (self.n_steps - 1)).to(self.device).long()
-            predicted_start = self.model(x, t)
+            x_t = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
+            for i in tqdm(reversed(range(0, self.n_steps))):
+                t = (torch.ones(n, 1) * i).long().to(self.device)
+                x_start = self.model(x_t, t).clamp_(-1., 1.)
+                mean, var = self.get_statistics(x_start, x_t, t.view(-1))
+                if i >= 1:
+                    noise = torch.randn_like(x_t)
+                else:
+                    noise = 0
 
-        predicted_start = (predicted_start.clamp(-1, 1) + 1) / 2
-        predicted_start = (predicted_start * 255).type(torch.uint8)
-        return predicted_start
+                x_t = mean + torch.exp(0.5 * var) * noise
+
+        x_t = (x_t.clamp(-1, 1) + 1) / 2
+        x_t = (x_t * 255).type(torch.uint8)
+        return x_t
 
     def train(self, n_epochs, data_loader, dataset_len):
         self.model.train()
