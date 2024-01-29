@@ -50,10 +50,7 @@ class DiffusionModel:
             alpha = self.alphas[i]
             alpha_hat = self.alpha_hats[i]
             beta = self.betas[i]
-            if i >= 1:
-                noise = torch.randn_like(x_t)
-            else:
-                noise = 0
+            noise = torch.randn_like(x_t) if i > 1 else 0
 
             return 1 / torch.sqrt(alpha) * (
                         x_t - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + torch.sqrt(beta) * noise
@@ -61,10 +58,7 @@ class DiffusionModel:
         else:
             x_start = self.model(x_t, t).clamp_(-1., 1.)
             mean, var = self.get_statistics(x_start, x_t, t.view(-1))
-            if i >= 1:
-                noise = torch.randn_like(x_t)
-            else:
-                noise = 0
+            noise = torch.randn_like(x_t)
 
             return mean + torch.exp(0.5 * var) * noise
 
@@ -72,7 +66,7 @@ class DiffusionModel:
         self.model.eval()
         with torch.no_grad():
             x_t = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
-            for i in tqdm(reversed(range(0, self.n_steps))):
+            for i in tqdm(reversed(range(1, self.n_steps))):
                 t = (torch.ones(n, 1) * i).long().to(self.device)
                 x_t = self.sample_prev(x_t, t, i, w, labels)
 
@@ -112,3 +106,11 @@ class DiffusionModel:
             losses.append(epoch_loss)
 
         return losses
+
+    def save_model(self, path):
+        torch.save(self.model.state_dict(), path)
+
+    def upload_weights(self, path):
+        self.model.load_state_dict(torch.load(path))
+
+
