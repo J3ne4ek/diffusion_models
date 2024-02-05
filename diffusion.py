@@ -60,15 +60,16 @@ class DiffusionModel:
             mean, var = self.get_statistics(x_start, x_t, t.view(-1), eta)
             noise = torch.randn_like(x_t)
 
-            return mean + var**2 * noise
+            return mean + torch.sqrt(var) * noise
 
-    def sample(self, n, labels=None, eta=1, w=3):
+    def sample(self, n, labels=None, eta=1, w=3, x_t=None):
         self.model.eval()
         with torch.no_grad():
+          if x_t is None:
             x_t = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
-            for i in tqdm(reversed(range(1, self.n_steps))):
-                t = (torch.ones(n, 1) * i).long().to(self.device)
-                x_t = self.sample_prev(x_t, t, i, w, labels)
+          for i in tqdm(reversed(range(1, self.n_steps))):
+              t = (torch.ones(n, 1) * i).long().to(self.device)
+              x_t = self.sample_prev(x_t, t, i, w, labels)
 
         x_t = (x_t.clamp(-1, 1) + 1) / 2
         x_t = (x_t * 255).type(torch.uint8)
