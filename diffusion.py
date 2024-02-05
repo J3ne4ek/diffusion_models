@@ -26,21 +26,20 @@ class DiffusionModel:
         self.prev_alpha_hats = F.pad(self.alpha_hats[:-1], (1, 0), value=1.)
         self.beta_hats = self.betas * (1. - self.prev_alpha_hats) / (1. - self.alpha_hats)
 
-    def get_statistics(self, x_start, x_t, t):
-        var = self.beta_hats[t][:, None, None, None]
+    def get_statistics(self, x_start, x_t, t, eta=1):
+        var = eta * self.beta_hats[t][:, None, None, None]
         alpha_hat = self.alpha_hats[t][:, None, None, None]
         prev_alphas_hat = self.prev_alpha_hats[t][:, None, None, None]
-        beta_hat = self.beta_hats[t][:, None, None, None]
 
         b = (x_t - alpha_hat.sqrt() * x_start) / (1. - alpha_hat).sqrt()
-        mean = prev_alphas_hat.sqrt() * x_start + (1. - prev_alphas_hat - beta_hat).sqrt() * b
-        return mean, torch.log(var.clamp(min=1e-20))
+        mean = prev_alphas_hat.sqrt() * x_start + (1. - prev_alphas_hat - var).sqrt() * b
+        return mean, var
 
     def forward_process(self, x, t, noise):
         a_hats = self.alpha_hats[t].reshape(len(x), 1, 1, 1)
         return a_hats.sqrt() * x + (1 - a_hats).sqrt() * noise
 
-    def sample_prev(self, x_t, t, i, w, labels):
+    def sample_prev(self, x_t, t, i, w, labels, eta=1):
         if self.type == TargetType.NOISE:
             predicted_noise = self.model(x_t, t)
             if (w > 0) and (labels is not None):
@@ -51,18 +50,19 @@ class DiffusionModel:
             alpha_hat = self.alpha_hats[i]
             beta = self.betas[i]
             noise = torch.randn_like(x_t) if i > 1 else 0
+            var = eta * torch.sqrt(beta)
 
             return 1 / torch.sqrt(alpha) * (
-                        x_t - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + torch.sqrt(beta) * noise
+                        x_t - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + var * noise
 
         else:
             x_start = self.model(x_t, t).clamp_(-1., 1.)
-            mean, var = self.get_statistics(x_start, x_t, t.view(-1))
+            mean, var = self.get_statistics(x_start, x_t, t.view(-1), eta)
             noise = torch.randn_like(x_t)
 
-            return mean + torch.exp(0.5 * var) * noise
+            return mean + var**2 * noise
 
-    def sample(self, n, labels=None, w=3):
+    def sample(self, n, labels=None, eta=1, w=3):
         self.model.eval()
         with torch.no_grad():
             x_t = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
@@ -78,6 +78,7 @@ class DiffusionModel:
         self.model.train()
         mse = nn.MSELoss()
         optim = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=50, gamma=0.9)
         losses = []
 
         for epoch in tqdm(range(n_epochs)):
@@ -101,9 +102,12 @@ class DiffusionModel:
                 optim.step()
 
                 epoch_loss += loss.item() * len(x0) / dataset_len
+                
 
             print(f"Loss at epoch {epoch + 1}: {epoch_loss:.3f}")
             losses.append(epoch_loss)
+            scheduler.step()
+            
 
         return losses
 
@@ -111,6 +115,6 @@ class DiffusionModel:
         torch.save(self.model.state_dict(), path)
 
     def upload_weights(self, path):
-        self.model.load_state_dict(torch.load(path))
+        self.model.load_state_dict(torch.load(path, map_location=torch.device(self.device)))
 
 
