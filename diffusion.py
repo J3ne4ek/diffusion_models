@@ -21,65 +21,63 @@ class DiffusionModel:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.betas = torch.linspace(min_beta, max_beta, n_steps).to(self.device)
         self.model = model
-        self.alphas = 1 - self.betas
+        self.alphas = 1. - self.betas
         self.alpha_hats = torch.cumprod(self.alphas, dim=0)
         self.prev_alpha_hats = F.pad(self.alpha_hats[:-1], (1, 0), value=1.)
         self.beta_hats = self.betas * (1. - self.prev_alpha_hats) / (1. - self.alpha_hats)
 
-    def get_statistics(self, x_start, x_t, t, eta=1):
+    def get_statistics(self, x_start, x_t, t, predicted_noise, eta=1):
         var = eta * self.beta_hats[t][:, None, None, None]
-        alpha_hat = self.alpha_hats[t][:, None, None, None]
         prev_alphas_hat = self.prev_alpha_hats[t][:, None, None, None]
-
-        b = (x_t - alpha_hat.sqrt() * x_start) / (1. - alpha_hat).sqrt()
-        mean = prev_alphas_hat.sqrt() * x_start + (1. - prev_alphas_hat - var).sqrt() * b
+        mean = prev_alphas_hat.sqrt() * x_start + (1. - prev_alphas_hat - var).sqrt() * predicted_noise
         return mean, var
 
     def forward_process(self, x, t, noise):
         a_hats = self.alpha_hats[t].reshape(len(x), 1, 1, 1)
-        return a_hats.sqrt() * x + (1 - a_hats).sqrt() * noise
+        return a_hats.sqrt() * x + (1. - a_hats).sqrt() * noise
 
     def sample_prev(self, x_t, t, i, w, labels, eta=1):
+        alpha_hat = self.alpha_hats[t.view(-1)][:, None, None, None]
+        
         if self.type == TargetType.NOISE:
             predicted_noise = self.model(x_t, t)
             if (w > 0) and (labels is not None):
                 predicted_noise2 = self.model(x_t, t, labels)
                 predicted_noise = (w + 1) * predicted_noise2 - w * predicted_noise
 
-            alpha = self.alphas[i]
-            alpha_hat = self.alpha_hats[i]
-            beta = self.betas[i]
-            noise = torch.randn_like(x_t) if i > 1 else 0
-            var = eta * torch.sqrt(beta)
-
-            return 1 / torch.sqrt(alpha) * (
-                        x_t - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + var * noise
+            x_start = (x_t - (1. - alpha_hat).sqrt() * predicted_noise) / alpha_hat.sqrt()
 
         else:
-            x_start = self.model(x_t, t).clamp_(-1., 1.)
-            mean, var = self.get_statistics(x_start, x_t, t.view(-1), eta)
-            noise = torch.randn_like(x_t)
+            x_start = self.model(x_t, t)
+            predicted_noise = (x_t - alpha_hat.sqrt() * x_start) / (1. - alpha_hat).sqrt()
+        
+        mean, var = self.get_statistics(x_start, x_t, t.view(-1), 
+                                        predicted_noise,eta)
+        noise = torch.randn_like(x_t) if i > 1 else 0
+        return mean + torch.sqrt(var) * noise
 
-            return mean + torch.sqrt(var) * noise
-
-    def sample(self, n, labels=None, eta=1, w=3, x_t=None):
+    def sample(self, n, labels=None, eta=1, w=3, x_t=None, step=None):
         self.model.eval()
+        intermidiate = []
+        if step is None:
+          step = self.n_steps
         with torch.no_grad():
           if x_t is None:
             x_t = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
-          for i in tqdm(reversed(range(1, self.n_steps))):
+          for i in tqdm(reversed(range(1, step))):
               t = (torch.ones(n, 1) * i).long().to(self.device)
-              x_t = self.sample_prev(x_t, t, i, w, labels)
+              x_t = self.sample_prev(x_t, t, i, w, labels, eta)
+              intermidiate.append(x_t)
 
         x_t = (x_t.clamp(-1, 1) + 1) / 2
         x_t = (x_t * 255).type(torch.uint8)
-        return x_t
+        return x_t, intermidiate
 
     def train(self, n_epochs, data_loader, dataset_len):
         self.model.train()
         mse = nn.MSELoss()
         optim = torch.optim.Adam(self.model.parameters(), lr=1e-3)
-        scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=50, gamma=0.9)
+        scheduler = torch.optim.lr_scheduler.StepLR(optim, step_size=10, gamma=0.9)
         losses = []
 
         for epoch in tqdm(range(n_epochs)):
