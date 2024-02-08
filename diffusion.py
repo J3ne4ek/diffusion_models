@@ -110,7 +110,7 @@ class DiffusionModel:
 
         return losses
 
-    def save_model(self, path):
+    def save_weights(self, path):
         torch.save(self.model.state_dict(), path)
 
     def upload_weights(self, path):
