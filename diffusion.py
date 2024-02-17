@@ -36,7 +36,7 @@ class DiffusionModel:
         a_hats = self.alpha_hats[t].reshape(len(x), 1, 1, 1)
         return a_hats.sqrt() * x + (1. - a_hats).sqrt() * noise
 
-    def sample_prev(self, x_t, t, i, w, labels, eta=1):
+    def sample_prev(self, x_t, t, i, w, labels, eta):
         alpha_hat = self.alpha_hats[t.view(-1)][:, None, None, None]
         
         if self.type == TargetType.NOISE:
@@ -56,15 +56,24 @@ class DiffusionModel:
         noise = torch.randn_like(x_t) if i > 1 else 0
         return mean + torch.sqrt(var) * noise
 
-    def sample(self, n, labels=None, eta=1, w=3, x_t=None, step=None):
+    def sample(self, n, labels=None, eta=1, w=3, x_t=None, start_step=None, steps=None):
         self.model.eval()
         intermidiate = []
-        if step is None:
-          step = self.n_steps
+        if start_step is None:
+            start_step = self.n_steps
         with torch.no_grad():
           if x_t is None:
             x_t = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
-          for i in tqdm(reversed(range(1, step))):
+
+          if steps is None:
+            steps = self.n_steps
+          step_size = start_step // steps
+          indexes = torch.arange(1, start_step, step_size)
+          self.prev_alpha_hats[indexes] = F.pad(self.alpha_hats[indexes][:-1], (1, 0), value=1.)
+          self.beta_hats[indexes] = ((1. - self.prev_alpha_hats[indexes]) / (1. - self.alpha_hats[indexes])) \
+                                    * (1. - self.alpha_hats[indexes] / self.prev_alpha_hats[indexes])
+
+          for i in tqdm(indexes.flip(dims=(0,))):
               t = (torch.ones(n, 1) * i).long().to(self.device)
               x_t = self.sample_prev(x_t, t, i, w, labels, eta)
               intermidiate.append(x_t)
